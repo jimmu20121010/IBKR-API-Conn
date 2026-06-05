@@ -1,3 +1,6 @@
+# self.llm = ChatGoogleGenAI(model="gemini-2.0-flash")
+# self.llm = ChatGroq(model="llama-3.3-70b-versatile")
+# self.llm = ChatDeepSeek(model="deepseek-reasoner")
 import os
 from langchain_core.prompts import ChatPromptTemplate
 # 💡 改用 Groq 的套件
