@@ -1,29 +1,29 @@
 import os
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+# 💡 改用 Groq 的套件
+from langchain_groq import ChatGroq 
 
 class MeetingMinutesAgent:
     def __init__(self):
-        # 初始化大語言模型 (建議使用長文本處理能力強、邏輯佳的 GPT-4o)
-        self.llm = ChatOpenAI(
-            model="gpt-4o",
-            temperature=0.2, # 低隨機性，確保摘要準確不胡扯
-            openai_api_key=os.getenv("OPENAI_API_KEY")
+        # 💡 初始化 Groq，並使用 Meta 目前最強的開源模型 Llama 3.3
+        self.llm = ChatGroq(
+            model="llama-3.3-70b-versatile", 
+            temperature=0.2,                  # 保持低隨機性
+            api_key="gsk_AIPKEY" # 👈 直接貼上你的 Groq 免費 Key！
         )
         
     def generate_minutes(self, transcript: str) -> str:
-        # 定義 Agent 的角色定義與提示詞 (System Prompt)
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", """
             你是一個專業的進階會議紀錄祕書 Agent。
-            請仔細閱讀以下會議的原始逐字稿，並將其整理成專業、結構清晰的會議紀錄。
+            請仔細閱讀以下會議的原始逐字稿，並將其整理成專業、結構清晰的繁體中文會議紀錄。
             
             輸出格式必須嚴格包含以下結構：
-            ## 🎯 会议基本信息
+            ## 🎯 會議基本信息
             - **會議名稱**: (若逐字稿未提及則根據內容推導)
             - **會議日期**: (若未知請寫未知)
             
-            ## 📝 会议核心摘要
+            ## 📝 會議核心摘要
             (請用條列式概述會議討論的核心重點、各方觀點，避免流水帳)
             
             ## 💡 關鍵決策
@@ -35,16 +35,12 @@ class MeetingMinutesAgent:
             ("user", "這是會議的原始逐字稿：\n\n{transcript}")
         ])
         
-        # 建立處理鏈 (Chain)
         chain = prompt_template | self.llm
-        
-        # 執行 Agent
         response = chain.invoke({"transcript": transcript})
         return response.content
 
 # 測試執行
 if __name__ == "__main__":
-    # 模擬一段會議逐字稿
     mock_transcript = """
     張經理：大家早，今天主要討論我們新產品的上市時程。行銷部的 Sandy，英文版廣告預算出來了嗎？
     Sandy：經理早，預算已經估好了，大約是 50 萬台幣，我預計下週三前會把詳細的媒體投放企劃書提報上來。
