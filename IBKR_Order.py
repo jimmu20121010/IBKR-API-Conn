@@ -1,3 +1,7 @@
+# self.llm = ChatGoogleGenAI(model="gemini-2.0-flash")
+# self.llm = ChatGroq(model="llama-3.3-70b-versatile")
+# self.llm = ChatDeepSeek(model="deepseek-reasoner")
+
 from ib_async import IB, Stock, MarketOrder, LimitOrder
 ib = IB()
 ib.connect('127.0.0.1', 7497, clientId=1)
