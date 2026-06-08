@@ -1,0 +1,67 @@
+import asyncio
+import sys
+
+# 解決 Python 3.10+ 在 Windows 上的事件循環策略問題與主執行緒無事件循環的錯誤
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# 手動建立並設定當前執行緒的事件循環
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# ----------------- 接下來再匯入 ib_insync -----------------
+import datetime
+from ib_insync import *
+
+# 1. 建立 IB 連線
+ib = IB()
+# 請根據您的 TWS 設定修改 port（模擬盤 7497，實盤 7496）
+ib.connect('127.0.0.1', 7497, clientId=1)
+
+# 2. 定義您圖中的兩檔選擇權合約
+options_to_check = [
+    {"strike": 11.0, "expiry": "20260717"},
+    {"strike": 14.0, "expiry": "20260717"}
+]
+
+contracts = []
+for opt in options_to_check:
+    contract = Option(
+        symbol='NOK', 
+        lastTradeDateOrContractMonth=opt["expiry"], 
+        strike=opt["strike"], 
+        right='P',          # 'P' 代表 Put (賣權)
+        exchange='SMART',   # 自動智慧路由
+        currency='USD'
+    )
+    contracts.append(contract)
+
+# 3. 補全並驗證合約資訊
+print("正在驗證合約資訊...")
+qualified_contracts = ib.qualifyContracts(*contracts)
+
+# 4. 請求市場快照數據
+print("正在獲取最新市場價格...")
+# 如果沒有付費買即時行情，解除下面這行的註解來獲取延遲 15 分鐘的行情
+ib.reqMarketDataType(3) 
+
+tickers = [ib.reqMktData(c, '', False, False) for c in qualified_contracts]
+
+# 暫停短暫時間讓 API 接收報價
+ib.sleep(2)
+
+print("\n--- 選擇權最新成交報價結果 ---")
+for ticker in tickers:
+    c = ticker.contract
+    last_price = ticker.last if ticker.last and ticker.last > 0 else "無近期成交"
+    bid = ticker.bid if ticker.bid and ticker.bid > 0 else "N/A"
+    ask = ticker.ask if ticker.ask and ticker.ask > 0 else "N/A"
+    
+    print(f"合約: NOK {c.lastTradeDateOrContractMonth} {c.strike} Put")
+    print(f"  -> 最新成交價 (Last): {last_price}")
+    print(f"  -> 當前買入價 (Bid) : {bid}")
+    print(f"  -> 當前賣出價 (Ask) : {ask}")
+    print("-" * 30)
+
+# 5. 斷開連線
+ib.disconnect()
