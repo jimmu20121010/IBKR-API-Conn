@@ -2,3 +2,6 @@ schedule
 yfinance
 ib-insync
 scipy
+streamlit
+pandas
+numpy
