@@ -1,8 +1,8 @@
 import streamlit as st
 import yfinance as yf
 
-st.title("📈 股票現價查詢器")
-symbol = st.text_input("輸入股票代碼（如 SOFI）：", "SOFI")
+st.title("📈 現價查詢器")
+symbol = st.text_input("輸入代碼（如 SOFI）：", "SOFI")
 
 if st.button("開始查詢"):
     ticker = yf.Ticker(symbol)
