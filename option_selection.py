@@ -1,3 +1,18 @@
+import asyncio
+import sys
+
+# 針對 Python 3.10+ 與 Streamlit 執行緒機制的特殊修補
+try:
+    # 嘗試獲取現有的 event loop
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    # 如果在當前執行緒找不到 event loop (Streamlit 執行緒常態)，手動建立並設定
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# -----------------------------------------------------------------
+# 修正完 Event Loop 後，現在才可以安全地導入其他套件
+# -----------------------------------------------------------------
 import streamlit as st
 import yfinance as yf
 import math
@@ -5,7 +20,7 @@ import pandas as pd
 from datetime import datetime
 from scipy.stats import norm
 
-# 引入 IBKR API 必備套件
+# 這裡才導入 ib_insync，此時它在 eventkit 內呼叫 get_event_loop() 就不會崩潰了
 from ib_insync import IB, Contract, ComboLeg, MarketOrder, LimitOrder
 
 # =================================================================
