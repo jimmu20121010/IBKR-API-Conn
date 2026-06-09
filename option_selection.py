@@ -219,7 +219,7 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                 all_golden_combos = []
                 
                 for expiry_str, dte in valid_expiries:
-                    time.sleep(0.5)
+                    time.sleep(1)
                     T_years = dte / 365.0
                     opt_chain = ticker.option_chain(expiry_str)
                     
