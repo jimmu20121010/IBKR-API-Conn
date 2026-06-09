@@ -1,6 +1,6 @@
 import asyncio
 import sys
-
+import time
 # 針對 Python 3.10+ 與 Streamlit 執行緒機制的特殊修補
 try:
     # 嘗試獲取現有的 event loop
@@ -219,6 +219,7 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                 all_golden_combos = []
                 
                 for expiry_str, dte in valid_expiries:
+                    time.sleep(0.5)
                     T_years = dte / 365.0
                     opt_chain = ticker.option_chain(expiry_str)
                     
