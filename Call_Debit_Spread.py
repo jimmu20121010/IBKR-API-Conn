@@ -40,7 +40,7 @@ TWS_HOST       = "127.0.0.1"
 TWS_PORT       = 7497             
 CLIENT_ID      = 10
 SYMBOLS        = ["NOK", "ONDS", "RCAT", "RBLX", "JOBY", "SOFI"]
-MAX_DTE        = 60               
+MAX_DTE        = 90               
 
 EMAIL_SENDER   = "jimmu20121010@gmail.com"
 EMAIL_PASSWORD = "vqpb dpmh tjby bprl"  
