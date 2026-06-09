@@ -33,7 +33,6 @@ def bs_prob_itm_put(S, K, T, r, sigma) -> float:
 
 def check_bull_call(symbol, S, long_k, short_k, long_ask, short_bid, iv, T_years, r, min_ev):
     """計算並篩選標準 Bull Call Debit Spread"""
-    # 核心安全規則：買方必須在價內/價平(<=S)，賣方必須在價外(>S)
     if long_k > S or short_k <= S:
         return None
         
@@ -75,7 +74,6 @@ def check_bull_call(symbol, S, long_k, short_k, long_ask, short_bid, iv, T_years
 
 def check_bull_put(symbol, S, short_k, long_k, short_bid, long_ask, iv, T_years, r, min_ev):
     """計算並篩選標準 Bull Put Credit Spread"""
-    # 核心安全規則：賣方與買方都必須在價外(下方安全防線 < S)
     if short_k >= S or long_k >= short_k:
         return None
 
@@ -122,23 +120,29 @@ def check_bull_put(symbol, S, short_k, long_k, short_bid, long_ask, iv, T_years,
 st.set_page_config(page_title="頂級期權組合篩選器", layout="wide")
 
 st.title("📈 頂級期權策略組合智能篩選系統")
-st.markdown("輸入美股代號，系統將自動抓取即時選擇權鏈，透過 **Black-Scholes 數學模型** 篩選出具備**正期望值 (Positive EV)** 且符合正統技術形態的頂級交易組合。")
+st.markdown("在左側輸入**任意美股代號**，系統將自動抓取即時選擇權鏈，透過 **Black-Scholes 數學模型** 篩選出具備**正期望值 (Positive EV)** 且符合正統技術形態的頂級交易組合。")
 
 # 側邊欄設定區
 st.sidebar.header("⚙️ 篩選參數設定")
-ticker_input = st.sidebar.text_input("輸入股票代號", value="SOFI").upper().strip()
+
+# 👇 🔥 【關鍵修改/核心功能點】這裡建立了一個文字輸入框，讓 User 可以自由輸入個股代號
+ticker_input = st.sidebar.text_input("輸入股票代號 (例如: AAPL, TSLA, SOFI)", value="SOFI").upper().strip()
+
 max_dte = st.sidebar.slider("最大到期天數 (DTE)", min_value=7, max_value=120, value=60, step=7)
 min_ev_threshold = st.sidebar.number_input("最低期望值門檻 (MIN_EV)", min_value=0.01, max_value=1.00, value=0.10, step=0.01)
 risk_free_rate = st.sidebar.number_input("無風險利率", min_value=0.0, max_value=0.1, value=0.045, step=0.005)
-spread_widths = st.sidebar.multiselect("允許的價差寬度 (Width)", options=[0.5, 1.0, 2.0, 3.0, 5.0], default=[1.0, 2.0, 3.0])
+spread_widths = st.sidebar.multiselect("允許的價差寬度 (Width)", options=[0.5, 1.0, 2.0, 3.0, 5.0, 10.0], default=[1.0, 2.0, 3.0])
 
+# 當使用者按下按鍵時，才會根據上面輸入的 ticker_input 開始撈取 yfinance 資料
 if st.sidebar.button("🚀 開始分析期權鏈"):
     if not ticker_input:
         st.error("請輸入有效的股票代號！")
     else:
         with st.spinner(f"正在從 yfinance 獲取 {ticker_input} 最新數據中..."):
             try:
+                # 動態帶入 User 輸入的代號
                 ticker = yf.Ticker(ticker_input)
+                
                 # 取得即時現價
                 fast_info = ticker.fast_info
                 S = fast_info.get('lastPrice', None)
@@ -148,9 +152,10 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                         S = hist['Close'].iloc[-1]
                 
                 if not S or math.isnan(S) or S <= 0:
-                    st.error(f"無法取得 {ticker_input} 的現價，可能代號輸入錯誤。")
+                    st.error(f"無法取得 {ticker_input} 的現價，可能代號輸入錯誤，請重新確認。")
                     st.stop()
                 
+                # 網頁大標題顯示現價
                 st.metric(label=f"📊 {ticker_input} 目前正股現價", value=f"${S:.2f}")
                 
                 today = datetime.now().date()
@@ -164,7 +169,7 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                         valid_expiries.append((exp_str, dte))
                 
                 if not valid_expiries:
-                    st.warning(f"找不到在 {max_dte} 天內到期的合適期權鏈。")
+                    st.warning(f"找不到該股在 {max_dte} 天內到期的合適期權鏈。")
                     st.stop()
                 
                 all_golden_combos = []
@@ -174,10 +179,9 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                     T_years = dte / 365.0
                     opt_chain = ticker.option_chain(expiry_str)
                     
-                    # --- 處理 Call Spread (買方策略) ---
+                    # --- 處理 Call Spread ---
                     calls = opt_chain.calls
-                    # 限縮合理價格區間 (現價上下 30%)
-                    df_calls = calls[(calls['strike'] >= S * 0.70) & (calls['strike'] <= S * 1.30)]
+                    df_calls = calls[(calls['strike'] >= S * 0.50) & (calls['strike'] <= S * 1.50)]
                     call_quotes = {}
                     for _, row in df_calls.iterrows():
                         k = float(row['strike'])
@@ -201,9 +205,9 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                                     res["天數 (DTE)"] = dte
                                     all_golden_combos.append(res)
 
-                    # --- 處理 Put Spread (賣方策略) ---
+                    # --- 處理 Put Spread ---
                     puts = opt_chain.puts
-                    df_puts = puts[(puts['strike'] >= S * 0.70) & (puts['strike'] <= S * 1.05)]
+                    df_puts = puts[(puts['strike'] >= S * 0.50) & (puts['strike'] <= S * 1.10)]
                     put_quotes = {}
                     for _, row in df_puts.iterrows():
                         k = float(row['strike'])
@@ -230,16 +234,13 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                 # 展示篩選結果
                 if all_golden_combos:
                     df_res = pd.DataFrame(all_golden_combos)
-                    # 雙重排序：1. 到期天數由近到遠 2. 期望值由大到小
                     df_res = df_res.sort_values(by=["天數 (DTE)", "期望值 EV"], ascending=[True, False])
                     
-                    # 重新排列欄位順序美化輸出
                     cols_order = ["策略類型", "到期日", "天數 (DTE)", "組合形態", "期望值 EV", "EV% (投報率)", "全賺勝率", "淨收付(金)", "最大獲利", "最大風險", "損益平衡點", "最大報酬率"]
                     df_res = df_res[cols_order]
 
-                    st.success(f"🎯 掃描完成！為您找出共 {len(df_res)} 組符合正統型態且期望值大於 ${min_ev_threshold} 的黃金組合：")
+                    st.success(f"🎯 掃描完成！為您找出 {ticker_input} 共 {len(df_res)} 組符合正統型態且期望值大於 ${min_ev_threshold} 的頂級組合：")
                     
-                    # 分策略分頁籤（Tabs）呈現
                     tab1, tab2 = st.tabs(["📊 所有推薦組合清單", "💡 核心挑選教學指南"])
                     with tab1:
                         st.dataframe(df_res, use_container_width=True, hide_index=True)
@@ -254,7 +255,7 @@ if st.sidebar.button("🚀 開始分析期權鏈"):
                            期望值 EV 雖然是正數，但別忘了看 `EV%`。如果 EV% 高達 15% 以上，代表該組合性價比極高，是市場定價出現微幅失衡的絕佳進場點。
                         """)
                 else:
-                    st.info(f"💡 本輪掃描完成：目前市場報價中，無任何符合「期望值門檻 > {min_ev_threshold}」的正統策略組合。您可以嘗試在側邊欄調低期望值門檻。")
+                    st.info(f"💡 本輪掃描完成：目前市場報價中，無任何符合「期望值門檻 > {min_ev_threshold}」的正統策略組合。您可以嘗試在側邊欄調低期望值門檻或調整價差寬度。")
                     
             except Exception as e:
                 st.error(f"分析過程中發生預期外錯誤: {e}")
