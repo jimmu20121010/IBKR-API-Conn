@@ -2,6 +2,9 @@ schedule
 yfinance
 ib-insync
 scipy
-streamlit
 pandas
 numpy
+streamlit>=1.35.0
+
+
+

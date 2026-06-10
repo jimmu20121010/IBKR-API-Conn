@@ -1,71 +1,30 @@
+# =================================================================
+# 🔥 頂部修補：必須放在任何導入的最前面，防止 Streamlit 多線程 asyncio 崩潰
+# =================================================================
+import asyncio
+import sys
+import time
+
+try:
+    loop = asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# -----------------------------------------------------------------
+# 修正完 Event Loop 後，導入其他必要套件
+# -----------------------------------------------------------------
 import streamlit as st
-import yfinance as yf
 import math
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from scipy.stats import norm
 
-# 引入 IBKR API 必備套件
-from ib_insync import IB, Contract, ComboLeg, MarketOrder, LimitOrder
+# 引入 IBKR API 核心元件
+from ib_insync import IB, Contract, ComboLeg, MarketOrder, LimitOrder, Stock, Option
 
 # =================================================================
-# 1. IBKR 下單核心功能
-# =================================================================
-
-def place_ibkr_combo_order(strategy_type, symbol, expiry_str, strike_1, strike_2, action_1, action_2, right_1, right_2):
-    """
-    連接 IBKR 並送出跨價組合單 (Combo Order)
-    """
-    ib = IB()
-    try:
-        # 連接本地的 TWS (7496) 或 IB Gateway (7497)
-        # 如果部署到雲端，此處需更改為您雲端伺服器或自建網閘的 IP 與 Port
-        ib.connect('127.0.0.1', 7497, clientId=10)
-        
-        # 轉換日期格式為 IBKR 格式 (YYYYMMDD)
-        expiry_ib = expiry_str.replace('-', '')
-        
-        # 建立第一隻腳 (Leg 1)
-        leg1 = Contract(symbol=symbol, secType='OPT', lastTradeDateOrContractMonth=expiry_ib, strike=strike_1, right=right_1, exchange='SMART', currency='USD')
-        # 建立第二隻腳 (Leg 2)
-        leg2 = Contract(symbol=symbol, secType='OPT', lastTradeDateOrContractMonth=expiry_ib, strike=strike_2, right=right_2, exchange='SMART', currency='USD')
-        
-        # 必須先向 IB 請求資格合約，獲取 ConId
-        qualified_contracts = ib.qualifyContracts(leg1, leg2)
-        if len(qualified_contracts) < 2:
-            return False, "無法在 IBKR 找到對應的期權合約，請確認該合約是否具備流動性。"
-            
-        c1, c2 = qualified_contracts[0], qualified_contracts[1]
-        
-        # 建立組合單合約 (Bag Contract)
-        bag = Contract()
-        bag.symbol = symbol
-        bag.secType = 'BAG'
-        bag.exchange = 'SMART'
-        bag.currency = 'USD'
-        
-        # 定義組合單的兩隻腳
-        combo_leg1 = ComboLeg(conId=c1.conId, ratio=1, action=action_1, exchange='SMART')
-        combo_leg2 = ComboLeg(conId=c2.conId, ratio=1, action=action_2, exchange='SMART')
-        bag.comboLegs = [combo_leg1, combo_leg2]
-        
-        # 下單：此處示範使用「市價單 (MarketOrder)」
-        # 警示：實務上期權建議改用 LimitOrder(action='BUY', lmtPrice=...) 以防滑價
-        order = MarketOrder(action='BUY', totalQuantity=1)
-        
-        trade = ib.placeOrder(bag, order)
-        ib.sleep(1) # 等待一秒讓訂單送出
-        
-        return True, f"下單成功！已送出 {strategy_type} 組合單，訂單狀態: {trade.orderStatus.status}"
-        
-    except Exception as e:
-        return False, f"IBKR 連線或下單失敗: {str(e)}"
-    finally:
-        if ib.isConnected():
-            ib.disconnect()
-
-# =================================================================
-# 2. 核心數學與策略計算模組 (Black-Scholes & EV Logic)
+# 1. 核心數學模組 (Black-Scholes 勝率計算法)
 # =================================================================
 
 def bs_prob_itm_call(S, K, T, r, sigma) -> float:
@@ -84,7 +43,12 @@ def bs_prob_itm_put(S, K, T, r, sigma) -> float:
         return norm.cdf(-d2)
     except Exception: return 0.5
 
-def check_bull_call(symbol, S, long_k, short_k, long_ask, short_bid, iv, T_years, r, min_ev):
+# =================================================================
+# 2. 策略金流與期望值 (EV) 計算過濾器
+# =================================================================
+
+def check_bull_call(S, long_k, short_k, long_ask, short_bid, iv, T_years, r, min_ev):
+    """計算並篩選正統 Bull Call Debit Spread (買方)"""
     if long_k > S or short_k <= S: return None
     debit = round(long_ask - short_bid, 4)
     width = short_k - long_k
@@ -113,12 +77,12 @@ def check_bull_call(symbol, S, long_k, short_k, long_ask, short_bid, iv, T_years
         "最大獲利": f"${max_profit:.2f}",
         "最大風險": f"${max_loss:.2f}",
         "損益平衡點": f"${round(breakeven, 2)}",
-        # 後台下單隱藏參數
         "strike_1": long_k, "strike_2": short_k,
         "action_1": "BUY", "action_2": "SELL", "right_1": "C", "right_2": "C"
     }
 
-def check_bull_put(symbol, S, short_k, long_k, short_bid, long_ask, iv, T_years, r, min_ev):
+def check_bull_put(S, short_k, long_k, short_bid, long_ask, iv, T_years, r, min_ev):
+    """計算並篩選正統 Bull Put Credit Spread (賣方)"""
     if short_k >= S or long_k >= short_k: return None
     credit = round(short_bid - long_ask, 4)
     width = short_k - long_k
@@ -147,7 +111,6 @@ def check_bull_put(symbol, S, short_k, long_k, short_bid, long_ask, iv, T_years,
         "最大獲利": f"${max_profit:.2f}",
         "最大風險": f"${max_loss:.2f}",
         "損益平衡點": f"${round(breakeven, 2)}",
-        # 後台下單隱藏參數
         "strike_1": short_k, "strike_2": long_k,
         "action_1": "SELL", "action_2": "BUY", "right_1": "P", "right_2": "P"
     }
@@ -156,145 +119,212 @@ def check_bull_put(symbol, S, short_k, long_k, short_bid, long_ask, iv, T_years,
 # 3. Streamlit 前端網頁介面
 # =================================================================
 
-st.set_page_config(page_title="IBKR 期權自動化下單系統", layout="wide")
-st.title("⚡ 頂級期權策略組合智慧篩選與自動下單系統")
+st.set_page_config(page_title="全 IBKR 智慧期權交易系統", layout="wide")
+st.title("⚡ 全 IBKR 驅動 - 期權策略智慧篩選與下單系統")
 
-st.sidebar.header("⚙️ 篩選參數設定")
+# 側邊欄設定區
+st.sidebar.header("⚙️ 1. 系統參數設定")
 ticker_input = st.sidebar.text_input("輸入股票代號", value="SOFI").upper().strip()
-max_dte = st.sidebar.slider("最大到期天數 (DTE)", min_value=7, max_value=120, value=60, step=7)
-min_ev_threshold = st.sidebar.number_input("最低期望值門檻 (MIN_EV)", min_value=0.01, max_value=1.00, value=0.10, step=0.01)
+max_dte = st.sidebar.slider("最大到期天數 (DTE)", min_value=7, max_value=120, value=45, step=7)
+min_ev_threshold = st.sidebar.number_input("最低期望值門檻 (MIN_EV)", min_value=0.01, max_value=1.00, value=0.05, step=0.01)
 risk_free_rate = st.sidebar.number_input("無風險利率", min_value=0.0, max_value=0.1, value=0.045, step=0.005)
-spread_widths = st.sidebar.multiselect("允許的價差寬度 (Width)", options=[0.5, 1.0, 2.0, 3.0, 5.0], default=[1.0, 2.0, 3.0])
+spread_widths = st.sidebar.multiselect("允許的價差寬度 (Width)", options=[0.5, 1.0, 2.0, 3.0, 5.0], default=[0.5, 1.0, 2.0])
 
-# 初始化 Session State 用於記錄點擊下單的狀態
-if "order_status" not in st.session_state:
-    st.session_state.order_status = ""
+st.sidebar.header("🔌 2. IBKR 連線設定")
+ib_host = st.sidebar.text_input("IBKR 主機 IP", value="127.0.0.1")
+ib_port = st.sidebar.number_input("IBKR 監聽 Port", min_value=1, max_value=65535, value=7497, help="TWS 模擬帳戶通常為 7497，真實帳戶為 7496；IB Gateway 模擬為 4002，真實為 4001")
 
-if st.sidebar.button("🚀 開始分析期權鏈"):
-    st.session_state.order_status = "" # 清空上次狀態
+if st.sidebar.button("🚀 開始連線 IBKR 並掃描"):
     if not ticker_input:
         st.error("請輸入有效的股票代號！")
     else:
-        with st.spinner(f"正在從 yfinance 獲取 {ticker_input} 最新數據中..."):
+        # 實例化 IB 物件
+        ib = IB()
+        with st.spinner(f"正在嘗試與 IBKR ({ib_host}:{ib_port}) 建立安全連線..."):
             try:
-                ticker = yf.Ticker(ticker_input)
-                fast_info = ticker.fast_info
-                S = fast_info.get('lastPrice', None)
+                ib.connect(ib_host, int(ib_port), clientId=12)
+                st.toast("✅ 已成功連接至 IBKR TWS/Gateway！", icon="🔌")
+                
+                # --- 步驟 A: 獲取正股合約與最新現價 ---
+                stock_contract = Stock(ticker_input, 'SMART', 'USD')
+                ib.qualifyContracts(stock_contract)
+                
+                # 請求即時市場快照數據
+                ticker_data = ib.reqMktData(stock_contract, '', False, False)
+                ib.sleep(1.5) # 等待 API 回傳報價
+                
+                # 優先抓取 Last 價格，若非交易時段則嘗試取 Close 或主動詢問市場
+                S = ticker_data.last if (ticker_data.last and not math.isnan(ticker_data.last)) else ticker_data.close
                 if not S or math.isnan(S) or S <= 0:
-                    hist = ticker.history(period="1d")
-                    if not hist.empty: S = hist['Close'].iloc[-1]
+                    S = ticker_data.marketPrice()
                 
                 if not S or math.isnan(S) or S <= 0:
-                    st.error(f"無法取得 {ticker_input} 的現價。")
+                    st.error(f"❌ 無法從 IBKR 獲取 {ticker_input} 的現價。請確認此代號正確或市場是否有報價權限。")
+                    ib.disconnect()
+                    st.stop()
+                    
+                st.metric(label=f"📊 IBKR 即時回傳 {ticker_input} 正股現價", value=f"${S:.2f}")
+                
+                # --- 步驟 B: 獲取該股所有期權鏈合約 ---
+                st.text("正在從 IBKR 下載並解析期權鏈合約...")
+                # 請求該正股對應的全部選擇權合約清單
+                chains = ib.reqSecDefOptParams(stock_contract.symbol, '', stock_contract.secType, stock_contract.conId)
+                
+                if not chains:
+                    st.error("❌ 無法取得該股票的期權合約鏈資訊。")
+                    ib.disconnect()
                     st.stop()
                 
-                st.metric(label=f"📊 {ticker_input} 目前正股現價", value=f"${S:.2f}")
+                # 選擇 SMART 交易所或主交易所的合約鏈
+                chain = next(c for c in chains if c.exchange == 'SMART' or c.exchange == '')
                 
-                today = datetime.now().date()
+                today = date.today()
                 valid_expiries = []
-                for exp_str in ticker.options:
-                    exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                for exp_str in chain.expirations:
+                    # IBKR 回傳的格式通常為 '20260619'
+                    exp_date = datetime.strptime(exp_str, "%Y%m%d").date()
                     dte = (exp_date - today).days
-                    if 0 < dte <= max_dte: valid_expiries.append((exp_str, dte))
+                    if 0 < dte <= max_dte:
+                        valid_expiries.append((exp_str, dte))
                 
                 if not valid_expiries:
-                    st.warning(f"找不到在 {max_dte} 天內到期的合適期權鏈。")
+                    st.warning(f"⚠️ 在指定的最大天數 {max_dte} 天內，找不到符合的到期日合適合約。")
+                    ib.disconnect()
                     st.stop()
                 
+                # --- 步驟 C: 批次獲取期權市場細節報價 (TWS 內網批次獲取極快，不限流)
                 all_golden_combos = []
+                st.text(f"正在掃描 {len(valid_expiries)} 個符合條件的到期日報價...")
                 
-                for expiry_str, dte in valid_expiries:
+                for exp_str, dte in valid_expiries:
                     T_years = dte / 365.0
-                    opt_chain = ticker.option_chain(expiry_str)
                     
-                    # Call Spread
-                    calls = opt_chain.calls
-                    df_calls = calls[(calls['strike'] >= S * 0.70) & (calls['strike'] <= S * 1.30)]
-                    call_quotes = {float(r['strike']): {"ask": float(r['ask'] if r['ask']>0 else r['lastPrice']), "bid": float(r['bid'] if r['bid']>0 else r['lastPrice']*0.95), "iv": float(r['impliedVolatility'])} for _, r in df_calls.iterrows()}
+                    # 過濾出在現價上下 30% 區間的合理履約價，減少不必要的合約抓取，優化效能
+                    filtered_strikes = [sk for sk in chain.strikes if S * 0.70 <= sk <= S * 1.30]
+                    
+                    # 打包建立這一批要請求報價的 Option 物件
+                    option_contracts = []
+                    for sk in filtered_strikes:
+                        option_contracts.append(Option(ticker_input, exp_str, sk, 'C', 'SMART', 'USD'))
+                        option_contracts.append(Option(ticker_input, exp_str, sk, 'P', 'SMART', 'USD'))
+                    
+                    # 補全合約 ConId
+                    qualified_options = ib.qualifyContracts(*option_contracts)
+                    
+                    # 批次大量請求報價快照
+                    tickers_list = ib.reqTickers(*qualified_options)
+                    
+                    # 整理出對應的字典格式方便提取
+                    call_quotes = {}
+                    put_quotes = {}
+                    
+                    for t in tickers_list:
+                        k = t.contract.strike
+                        # 抓取買賣價
+                        ask = t.ask if (t.ask and not math.isnan(t.ask) and t.ask > 0) else t.lastPrice
+                        bid = t.bid if (t.bid and not math.isnan(t.bid) and t.bid > 0) else (t.lastPrice * 0.95 if t.lastPrice else 0.01)
+                        # 讀取 IBKR 計算好的隱含波動率 (Model IV)
+                        iv = t.modelGreeks.impliedVol if (t.modelGreeks and t.modelGreeks.impliedVol) else 0.4
+                        
+                        if not ask or math.isnan(ask): continue
+                        
+                        if t.contract.right == 'C':
+                            call_quotes[k] = {"ask": ask, "bid": bid, "iv": iv}
+                        else:
+                            put_quotes[k] = {"ask": ask, "bid": bid, "iv": iv}
+                    
+                    # --- 進行策略組合配對篩選 ---
+                    # Call Spread 買方配對
                     for long_k in sorted(call_quotes.keys()):
                         for w in spread_widths:
                             short_k = long_k + w
                             if short_k in call_quotes:
-                                res = check_bull_call(ticker_input, S, long_k, short_k, call_quotes[long_k]["ask"], call_quotes[short_k]["bid"], call_quotes[long_k]["iv"], T_years, risk_free_rate, min_ev_threshold)
+                                res = check_bull_call(S, long_k, short_k, call_quotes[long_k]["ask"], call_quotes[short_k]["bid"], call_quotes[long_k]["iv"], T_years, risk_free_rate, min_ev_threshold)
                                 if res:
-                                    res["到期日"] = expiry_str
+                                    res["到期日"] = f"{exp_str[:4]}-{exp_str[4:6]}-{exp_str[6:]}" # 轉成網頁易讀格式 YYYY-MM-DD
                                     res["DTE"] = dte
-                                    res["下單"] = False # 初始化按鈕狀態值
+                                    res["raw_expiry"] = exp_str
+                                    res["下單"] = False
                                     all_golden_combos.append(res)
-
-                    # Put Spread
-                    puts = opt_chain.puts
-                    df_puts = puts[(puts['strike'] >= S * 0.70) & (puts['strike'] <= S * 1.05)]
-                    put_quotes = {float(r['strike']): {"ask": float(r['ask'] if r['ask']>0 else r['lastPrice']), "bid": float(r['bid'] if r['bid']>0 else r['lastPrice']*0.95), "iv": float(r['impliedVolatility'])} for _, r in df_puts.iterrows()}
+                                    
+                    # Put Spread 賣方配對
                     for short_k in sorted(put_quotes.keys()):
                         for w in spread_widths:
                             long_k = short_k - w
                             if long_k in put_quotes:
-                                res = check_bull_put(ticker_input, S, short_k, long_k, put_quotes[short_k]["bid"], put_quotes[long_k]["ask"], put_quotes[short_k]["iv"], T_years, risk_free_rate, min_ev_threshold)
+                                res = check_bull_put(S, short_k, long_k, put_quotes[short_k]["bid"], put_quotes[long_k]["ask"], put_quotes[short_k]["iv"], T_years, risk_free_rate, min_ev_threshold)
                                 if res:
-                                    res["到期日"] = expiry_str
+                                    res["到期日"] = f"{exp_str[:4]}-{exp_str[4:6]}-{exp_str[6:]}"
                                     res["DTE"] = dte
-                                    res["下單"] = False # 初始化按鈕狀態值
+                                    res["raw_expiry"] = exp_str
+                                    res["下單"] = False
                                     all_golden_combos.append(res)
-                
+
+                # --- 步驟 D: 將數據呈現在互動表格中 ---
                 if all_golden_combos:
                     df_res = pd.DataFrame(all_golden_combos)
                     df_res = df_res.sort_values(by=["DTE", "期望值 EV"], ascending=[True, False])
                     
-                    # 調整顯示順序
                     display_cols = ["策略類型", "到期日", "DTE", "組合形態", "期望值 EV", "EV%", "全賺勝率", "淨收付", "最大獲利", "最大風險", "損益平衡點", "下單"]
                     df_display = df_res[display_cols].copy()
 
-                    st.success(f"🎯 篩選完成！共找到 {len(df_display)} 組頂級正 EV 組合。")
+                    st.success(f"🎯 篩選完成！全 IBKR 報價系統共計找出 {len(df_display)} 組符合條件的頂級正 EV 組合。")
                     
-                    # 👇 🔥 【核心改動：使用 st.data_editor 渲染互動式表格並嵌入下單按鈕】
                     edited_df = st.data_editor(
                         df_display,
-                        key="combo_table",
+                        key="ib_combo_table",
                         use_container_width=True,
                         hide_index=True,
-                        disabled=["策略類型", "到期日", "DTE", "組合形態", "期望值 EV", "EV%", "全賺勝率", "淨收付", "最大獲利", "最大風險", "損益平衡點"], # 鎖定其他欄位不可編輯
+                        disabled=["策略類型", "到期日", "DTE", "組合形態", "期望值 EV", "EV%", "全賺勝率", "淨收付", "最大獲利", "最大風險", "損益平衡點"],
                         column_config={
                             "下單": st.column_config.ButtonColumn(
-                                "下單",
-                                help="點擊直接發送此跨價期權單至 IBKR 帳戶",
+                                "🚀 下單",
+                                help="立刻發送該跨價組合（Combo Bag）委託至您開著的 IBKR 交易終端",
                                 default=False,
                                 button_style="primary"
                             )
                         }
                     )
                     
-                    # 偵測使用者點擊了哪一列的下單按鈕
+                    # 偵測並觸發即時下單
                     for idx, row in edited_df.iterrows():
                         if row["下單"] == True:
-                            # 找出對應原始資料中的隱藏參數（如 strike, action 等）
-                            matched_origin = df_res[(df_res['到期日'] == row['到期日']) & (df_res['組合形態'] == row['組合形態'])].iloc[0]
+                            # 逆向找出該列在原資料組中的所有下單控制變數
+                            matched = df_res[(df_res['到期日'] == row['到期日']) & (df_res['組合形態'] == row['組合形態'])].iloc[0]
                             
-                            st.info(f"正在連線 IBKR 送出委託單： {row['組合形態']} ({row['到期日']})...")
+                            st.info(f"⚡ 正在建立 IBKR 雙腿組合單結構並發送： {row['組合形態']} ({row['到期日']})...")
                             
-                            # 呼叫 IBKR 下單函式
-                            success, message = place_ibkr_combo_order(
-                                strategy_type=matched_origin["策略類型"],
-                                symbol=ticker_input,
-                                expiry_str=matched_origin["到期日"],
-                                strike_1=matched_origin["strike_1"],
-                                strike_2=matched_origin["strike_2"],
-                                action_1=matched_origin["action_1"],
-                                action_2=matched_origin["action_2"],
-                                right_1=matched_origin["right_1"],
-                                right_2=matched_origin["right_2"]
-                            )
-                            
-                            if success:
-                                st.success(message)
-                            else:
-                                st.error(message)
+                            try:
+                                # 1. 初始化兩條獨立腳位合約
+                                leg1 = Option(ticker_input, matched["raw_expiry"], matched["strike_1"], matched["right_1"], 'SMART', 'USD')
+                                leg2 = Option(ticker_input, matched["raw_expiry"], matched["strike_2"], matched["right_2"], 'SMART', 'USD')
+                                
+                                # 驗證與資格化這兩個期權合約
+                                qc = ib.qualifyContracts(leg1, leg2)
+                                if len(qc) < 2:
+                                    st.error("無法在 IBKR 交易所資格化這兩個合約，下單終止。")
+                                    continue
+                                
+                                # 2. 建立 BAG 組合單母合約
+                                bag = Contract(symbol=ticker_input, secType='BAG', exchange='SMART', currency='USD')
+                                combo_leg1 = ComboLeg(conId=qc[0].conId, ratio=1, action=matched["action_1"], exchange='SMART')
+                                combo_leg2 = ComboLeg(conId=qc[1].conId, ratio=1, action=matched["action_2"], exchange='SMART')
+                                bag.comboLegs = [combo_leg1, combo_leg2]
+                                
+                                # 3. 建立市價單（或可改為 LimitOrder）送出
+                                order = MarketOrder(action='BUY', totalQuantity=1)
+                                trade = ib.placeOrder(bag, order)
+                                ib.sleep(1) # 給予緩衝時間發送
+                                
+                                st.success(f"🎉 跨價單發送成功！IB 訂單狀態: **{trade.orderStatus.status}**")
+                            except Exception as order_err:
+                                st.error(f"下單執行期間發生錯誤: {order_err}")
                 else:
-                    st.info("💡 目前市場報價中，無任何符合條件的策略組合。")
+                    st.info("💡 掃描完畢：目前 IBKR 的報價中，暫時沒有符合您的期望值門檻與寬度設定的期權組合。")
                     
-            except Exception as e:
-                st.error(f"分析過程中發生預期外錯誤: {e}")
-
-# 顯示最後下單狀態
-if st.session_state.order_status:
-    st.warning(st.session_state.order_status)
+            except Exception as conn_e:
+                st.error(f"❌ 無法連接至 IBKR 或執行分析失敗: {conn_e}")
+            finally:
+                # 確保在運作結束或被手動停止後，必定中斷與 TWS 的 Socket 連線，不佔用 ClientId
+                if ib.isConnected():
+                    ib.disconnect()
