@@ -15,7 +15,7 @@ if not LINE_CHANNEL_ACCESS_TOKEN:
     raise ValueError('缺少 LINE_CHANNEL_ACCESS_TOKEN，請在 .env 設定')
 
 if not LINE_USER_ID:
-    raise ValueError('缺少LINE_USER_ID，請在 .env 設定')
+    raise ValueError('缺少 LINE_USER_ID，請在 .env 設定')
 
 
 def send_line_message(text: str):
